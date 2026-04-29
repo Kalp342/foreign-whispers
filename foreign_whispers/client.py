@@ -59,11 +59,13 @@ class FWClient:
         return f"{self.base_url}{path}"
 
     def _post(self, path: str, **kwargs) -> dict:
+        kwargs.setdefault("timeout", (10, None))
         resp = self._session.post(self._url(path), **kwargs)
         resp.raise_for_status()
         return resp.json()
 
     def _get_json(self, path: str, **kwargs) -> dict | list:
+        kwargs.setdefault("timeout", (10, None))
         resp = self._session.get(self._url(path), **kwargs)
         resp.raise_for_status()
         return resp.json()

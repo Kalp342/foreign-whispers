@@ -72,7 +72,7 @@ def translate_all_files(source_directory, destination_directory, from_code="en",
         es_trans = translate_file(en_trans, from_code, to_code)
 
         with open(save_path, 'w') as outfile:
-            outfile.write(json.dumps(en_trans))
+            outfile.write(json.dumps(es_trans))
 
         print("success!")
 

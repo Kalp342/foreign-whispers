@@ -7,7 +7,6 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from api.src.core.config import settings
 from api.src.core.dependencies import resolve_title
-from api.src.main import get_whisper_model
 from api.src.schemas.transcribe import TranscribeResponse, TranscribeSegment
 from api.src.services.transcription_service import TranscriptionService
 
@@ -89,6 +88,7 @@ async def transcribe_endpoint(
             )
 
     # Run Whisper STT
+    from api.src.main import get_whisper_model
     svc = TranscriptionService(
         ui_dir=settings.data_dir,
         whisper_model=get_whisper_model(request.app),
