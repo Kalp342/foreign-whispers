@@ -1,14 +1,184 @@
-"""Deterministic failure analysis and translation re-ranking stubs.
+"""Deterministic failure analysis and translation re-ranking.
 
 The failure analysis function uses simple threshold rules derived from
-SegmentMetrics.  The translation re-ranking function is a **student assignment**
-— see the docstring for inputs, outputs, and implementation guidance.
+SegmentMetrics.  The translation re-ranking function uses a hybrid
+strategy: rule-based Spanish contractions (tier 1), MarianMT
+re-translation (tier 2), and sentence-boundary truncation (tier 3).
 """
 
 import dataclasses
 import logging
+import re
+from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Duration heuristic
+# ---------------------------------------------------------------------------
+_CHARS_PER_SECOND = 15.0  # Spanish TTS, empirically ~15 chars/second
+
+# ---------------------------------------------------------------------------
+# Rule-based Spanish phrase contractions  (verbose phrase → concise form)
+# Each entry is (compiled_regex, replacement_string).
+# Replacements that are "" remove the phrase entirely (discourse markers).
+# ---------------------------------------------------------------------------
+_PHRASE_CONTRACTIONS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\ben este momento\b", re.I | re.U), "ahora"),
+    (re.compile(r"\ben la actualidad\b", re.I | re.U), "hoy"),
+    (re.compile(r"\ba continuación\b", re.I | re.U), "luego"),
+    (re.compile(r"\bcon respecto a\b", re.I | re.U), "sobre"),
+    (re.compile(r"\bdebido a que\b", re.I | re.U), "porque"),
+    (re.compile(r"\ba pesar de que\b", re.I | re.U), "aunque"),
+    (re.compile(r"\ben el caso de que\b", re.I | re.U), "si"),
+    (re.compile(r"\ben el momento en que\b", re.I | re.U), "cuando"),
+    (re.compile(r"\ba causa de\b", re.I | re.U), "por"),
+    (re.compile(r"\bde tal manera que\b", re.I | re.U), "así que"),
+    (re.compile(r"\bcon el fin de\b", re.I | re.U), "para"),
+    (re.compile(r"\ben lo que respecta a\b", re.I | re.U), "sobre"),
+    (re.compile(r"\bhay que tener en cuenta que\b", re.I | re.U), ""),
+    (re.compile(r"\bes importante destacar que\b", re.I | re.U), ""),
+    (re.compile(r"\bcabe señalar que\b", re.I | re.U), ""),
+    (re.compile(r"\bes necesario mencionar que\b", re.I | re.U), ""),
+    (re.compile(r"\blo que es más importante\b", re.I | re.U), "además"),
+    (re.compile(r"\bes decir\b", re.I | re.U), "o sea"),
+    (re.compile(r"\bsin embargo\b", re.I | re.U), "pero"),
+    (re.compile(r"\bno obstante\b", re.I | re.U), "pero"),
+    (re.compile(r"\bpor otro lado\b", re.I | re.U), "además"),
+    (re.compile(r"\bpor otra parte\b", re.I | re.U), "además"),
+    (re.compile(r"\ben primer lugar\b", re.I | re.U), "primero"),
+    (re.compile(r"\ben segundo lugar\b", re.I | re.U), "segundo"),
+    (re.compile(r"\ben realidad\b", re.I | re.U), "realmente"),
+    (re.compile(r"\bde todas formas\b", re.I | re.U), "igual"),
+    (re.compile(r"\bpor supuesto\b", re.I | re.U), "claro"),
+    (re.compile(r"\bnaturalmente\b", re.I | re.U), "claro"),
+    (re.compile(r"\bobviamente\b", re.I | re.U), "claro"),
+    (re.compile(r"\bevidente(?:mente)? que\b", re.I | re.U), ""),
+    (re.compile(r"\bpor lo tanto\b", re.I | re.U), "así"),
+    (re.compile(r"\bpor consiguiente\b", re.I | re.U), "así"),
+    (re.compile(r"\ben consecuencia\b", re.I | re.U), "así"),
+    (re.compile(r"\ba lo largo de\b", re.I | re.U), "durante"),
+    (re.compile(r"\bdurante el transcurso de\b", re.I | re.U), "durante"),
+    (re.compile(r"\bno solamente\b", re.I | re.U), "no solo"),
+    (re.compile(r"\bnos encontramos ante\b", re.I | re.U), "hay"),
+    (re.compile(r"\bse puede observar\b", re.I | re.U), "vemos"),
+    (re.compile(r"\bse puede ver\b", re.I | re.U), "vemos"),
+    (re.compile(r"\bhemos de\b", re.I | re.U), "debemos"),
+    (re.compile(r"\bes posible que\b", re.I | re.U), "puede que"),
+    (re.compile(r"\bpuede ser que\b", re.I | re.U), "puede que"),
+]
+
+# Discourse-marker filler words that can be stripped from sentence start
+_FILLER_PREFIX = re.compile(
+    r"^(?:(?:pues|bueno|bien|mira|oye|sabes|claro|eh|o\s+sea)[,\s]+)+",
+    re.I | re.U,
+)
+
+# Trailing discourse markers that add no content
+_FILLER_SUFFIX = re.compile(
+    r"[,\s]+(?:¿no|verdad|¿eh|¿sabes)\??\s*$",
+    re.I | re.U,
+)
+
+_MULTI_SPACE = re.compile(r"  +")
+
+# ---------------------------------------------------------------------------
+# MarianMT lazy-loaded model cache (module-level, loaded on first use)
+# ---------------------------------------------------------------------------
+_marian_model: Optional[object] = None
+_marian_tokenizer: Optional[object] = None
+
+
+def _apply_spanish_rules(text: str) -> str:
+    """Apply lexical contractions to produce a shorter Spanish text."""
+    result = text
+    for pattern, replacement in _PHRASE_CONTRACTIONS:
+        result = pattern.sub(replacement, result)
+    result = _FILLER_PREFIX.sub("", result)
+    result = _FILLER_SUFFIX.sub("", result)
+    result = _MULTI_SPACE.sub(" ", result).strip()
+    if result:
+        result = result[0].upper() + result[1:]
+    return result
+
+
+def _marian_translate(source_text: str) -> Optional[str]:
+    """Translate *source_text* (EN→ES) via MarianMT; returns None on failure."""
+    global _marian_model, _marian_tokenizer
+    try:
+        if _marian_model is None:
+            from transformers import MarianMTModel, MarianTokenizer  # type: ignore
+            _model_name = "Helsinki-NLP/opus-mt-en-es"
+            logger.info("Loading MarianMT %s (first call)", _model_name)
+            _marian_tokenizer = MarianTokenizer.from_pretrained(_model_name)
+            _marian_model = MarianMTModel.from_pretrained(_model_name)
+            _marian_model.eval()  # type: ignore[union-attr]
+        tokens = _marian_tokenizer(  # type: ignore[operator]
+            [source_text],
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
+        )
+        output_ids = _marian_model.generate(**tokens)  # type: ignore[union-attr]
+        return _marian_tokenizer.decode(  # type: ignore[union-attr]
+            output_ids[0], skip_special_tokens=True
+        )
+    except Exception as exc:
+        logger.debug("MarianMT unavailable: %s", exc)
+        return None
+
+
+def _truncate_to_budget(text: str, budget_chars: float) -> tuple[Optional[str], str]:
+    """Trim *text* to fit *budget_chars* by greedily accumulating fragments.
+
+    Tries, in order: sentence boundary → clause boundary → word boundary.
+    Returns (result, rationale) where result is None if the text already fits
+    or cannot be shortened further.
+    """
+    if len(text) <= budget_chars:
+        return None, ""
+
+    # Sentence-level: accumulate full sentences from the left
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    if len(sentences) > 1:
+        accumulated = ""
+        for sent in sentences:
+            trial = (accumulated + " " + sent).strip() if accumulated else sent
+            if len(trial) <= budget_chars:
+                accumulated = trial
+            else:
+                break
+        if accumulated and len(accumulated) < len(text):
+            return accumulated, "sentence-boundary truncation"
+
+    # Clause-level: accumulate comma/semicolon clauses from the left
+    clauses = re.split(r"[,;]\s*", text)
+    if len(clauses) > 1:
+        accumulated = ""
+        for clause in clauses:
+            sep = ", " if accumulated else ""
+            trial = accumulated + sep + clause
+            if len(trial) <= budget_chars:
+                accumulated = trial
+            else:
+                break
+        if accumulated and len(accumulated) < len(text):
+            return accumulated, "clause-boundary truncation"
+
+    # Word-boundary hard truncation
+    words = text.split()
+    kept, count = [], 0
+    for word in words:
+        cost = len(word) + (1 if kept else 0)
+        if count + cost > budget_chars:
+            break
+        kept.append(word)
+        count += cost
+    if kept and len(" ".join(kept)) < len(text):
+        return " ".join(kept), "word-boundary truncation"
+
+    return None, ""
 
 
 @dataclasses.dataclass
@@ -155,12 +325,67 @@ def get_shorter_translations(
        ``len(text) / 15.0`` is closest to ``target_duration_s``.
 
     Returns:
-        Empty list (stub).  Implement to return ``TranslationCandidate`` items.
+        List of ``TranslationCandidate`` objects, sorted shortest first.
+        All candidates are strictly shorter than *baseline_es*.
+        Returns an empty list only if *baseline_es* already fits within
+        the budget or no shorter form can be produced.
     """
+    budget_chars = target_duration_s * _CHARS_PER_SECOND
     logger.info(
-        "get_shorter_translations called for %.1fs budget (%d chars baseline) — "
-        "returning empty list (student assignment stub).",
+        "get_shorter_translations: %.1fs budget (%.0f chars), baseline %d chars",
         target_duration_s,
+        budget_chars,
         len(baseline_es),
     )
-    return []
+
+    seen: set[str] = set()
+    candidates: list[TranslationCandidate] = []
+
+    def _add(text: str, rationale: str) -> None:
+        text = text.strip()
+        # Only keep candidates that are strictly shorter than the baseline
+        if not text or text in seen or len(text) >= len(baseline_es):
+            return
+        seen.add(text)
+        candidates.append(TranslationCandidate(
+            text=text,
+            char_count=len(text),
+            brevity_rationale=rationale,
+        ))
+
+    # ------------------------------------------------------------------
+    # Tier 1: rule-based phrase contractions on the baseline
+    # ------------------------------------------------------------------
+    rule_text = _apply_spanish_rules(baseline_es)
+    _add(rule_text, "rule-based phrase contractions")
+
+    # ------------------------------------------------------------------
+    # Tier 2: MarianMT re-translation of the source text
+    # ------------------------------------------------------------------
+    marian_text = _marian_translate(source_text)
+    if marian_text:
+        _add(marian_text, "MarianMT alternative translation")
+        # Also apply rules to the MarianMT output for a combined candidate
+        marian_rule_text = _apply_spanish_rules(marian_text)
+        _add(marian_rule_text, "MarianMT + rule contractions")
+
+    # ------------------------------------------------------------------
+    # Tier 3: sentence/clause/word-boundary truncation (guaranteed fallback)
+    # Operate on whichever existing candidate is currently shortest, or on
+    # the baseline if no candidate was produced yet.
+    # ------------------------------------------------------------------
+    ref_for_trunc = (
+        min(candidates, key=lambda c: c.char_count).text
+        if candidates
+        else baseline_es
+    )
+    truncated, rationale = _truncate_to_budget(ref_for_trunc, budget_chars)
+    if truncated:
+        _add(truncated, rationale)
+    elif not candidates:
+        # Nothing helped; produce at minimum a word-boundary cut of the baseline
+        hard_cut, hard_rationale = _truncate_to_budget(baseline_es, budget_chars)
+        if hard_cut:
+            _add(hard_cut, hard_rationale)
+
+    return sorted(candidates, key=lambda c: c.char_count)
