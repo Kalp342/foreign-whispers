@@ -416,7 +416,7 @@ def _compute_speech_offset(source_path: str) -> float:
     return yt_start - whisper_start
 
 
-def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=None, lang: str = "es", speaker_wav: str | None = None):
+def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=None, lang: str = "es", speaker_wav: str | None = None, voice_map: dict | None = None):
     """Read translated JSON with segment timestamps and produce a time-aligned WAV.
 
     Each segment is individually synthesized and time-stretched to match its
@@ -438,9 +438,13 @@ def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=
 
     segments = segments_from_file(source_path)
 
-    # Build per-speaker voice map from diarization labels embedded in segments
-    unique_speakers = sorted({seg["speaker"] for seg in segments if "speaker" in seg})
-    speaker_voice_map = _build_speaker_voice_map(unique_speakers, lang=lang)
+    # Use caller-supplied voice_map (from router) when provided; otherwise derive
+    # from diarization labels embedded in the segments via round-robin assignment.
+    if voice_map is not None:
+        speaker_voice_map = voice_map
+    else:
+        unique_speakers = sorted({seg["speaker"] for seg in segments if "speaker" in seg})
+        speaker_voice_map = _build_speaker_voice_map(unique_speakers, lang=lang)
     if speaker_voice_map:
         print(f" (diarized: {len(speaker_voice_map)} speakers)", end="")
 

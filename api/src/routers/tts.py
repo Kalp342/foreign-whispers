@@ -58,19 +58,37 @@ async def tts_endpoint(
             "config": config,
         }
 
-    if speaker_wav is None:
-        speaker_wav = resolve_speaker_wav(settings.speakers_dir, "es")
-
     source_path = str(trans_dir / f"{title}.json")
 
+    # Build per-speaker voice map when diarization labels are present.
+    # resolve_speaker_wav provides the full fallback chain (speaker-specific →
+    # language default → global default) for each unique SPEAKER_XX label.
+    voice_map: dict[str, str] = {}
+    trans_path = pathlib.Path(source_path)
+    if trans_path.exists():
+        segments = json.loads(trans_path.read_text()).get("segments", [])
+        unique_speakers = sorted({seg["speaker"] for seg in segments if seg.get("speaker")})
+        if unique_speakers:
+            voice_map = {
+                spk: resolve_speaker_wav(settings.speakers_dir, "es", spk)
+                for spk in unique_speakers
+            }
+
+    # Fall back to a single reference voice when no diarization data exists.
+    if not voice_map and speaker_wav is None:
+        speaker_wav = resolve_speaker_wav(settings.speakers_dir, "es")
+
     await _run_in_threadpool(
-        None, svc.text_file_to_speech, source_path, str(audio_dir), alignment=alignment, lang="es", speaker_wav=speaker_wav
+        None, svc.text_file_to_speech, source_path, str(audio_dir),
+        alignment=alignment, lang="es", speaker_wav=speaker_wav,
+        voice_map=voice_map or None,
     )
 
     return {
         "video_id": video_id,
         "audio_path": str(wav_path),
         "config": config,
+        "voice_map": voice_map,
     }
 
 
