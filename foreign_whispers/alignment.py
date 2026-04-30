@@ -336,3 +336,151 @@ def global_align(
         cumulative_drift += gap_shift
 
     return aligned
+
+
+def global_align_dp(
+    metrics: list[SegmentMetrics],
+    silence_regions: list[dict],
+    max_stretch: float = 1.4,
+    drift_penalty: float = 0.5,
+) -> list[AlignedSegment]:
+    """DP-based global timeline optimiser — minimises stretch penalty + drift cost.
+
+    Improves on the greedy ``global_align`` by considering whether taking a
+    gap-shift at segment *i* (which adds to cumulative drift for all later
+    segments) is actually worth the penalty reduction.  The greedy accepts
+    every eligible gap-shift regardless; the DP is selective.
+
+    When *silence_regions* is empty the algorithm derives budgets from natural
+    inter-segment pauses (``next.source_start − this.source_end``).
+
+    Algorithm
+    ---------
+    State      : ``(segment_index, cumulative_drift)`` discretised at 50 ms.
+    Decision   : gap-shift or no-gap-shift for each segment.
+    Objective  : minimise ``Σ stretch_penalty_i + drift_penalty × Σ gap_shift_i``.
+    Complexity : O(n × N_D) where N_D = max_drift / 0.05 ≤ 600 states.
+
+    Key properties vs greedy
+    ------------------------
+    - Takes gap-shifts **only** when ``stretch_penalty_saved > drift_penalty × gap_used``.
+      MILD_STRETCH segments (low penalty) are left alone; REQUEST_SHORTER segments
+      (high penalty) get priority access to silence.
+    - Produces lower total drift when multiple segments compete for scarce gaps.
+    - Produces the same result as the greedy when no gaps are available.
+
+    Args:
+        metrics: Per-segment timing metrics from ``compute_segment_metrics``.
+        silence_regions: VAD silence regions ``[{"start_s", "end_s", "label"}]``.
+            Pass ``[]`` to auto-derive from segment timestamps.
+        max_stretch: Stretch ceiling for ``MILD_STRETCH`` (default 1.4).
+        drift_penalty: Cost per second of cumulative drift added to the total
+            objective.  Default 0.5 balances drift against mild-stretch costs;
+            raise to 2.0+ to minimise drift aggressively.
+
+    Returns:
+        One ``AlignedSegment`` per input metric, in order.
+    """
+    n = len(metrics)
+    if n == 0:
+        return []
+
+    # ── Per-segment silence budget ────────────────────────────────────────────
+    def _gap_after(i: int) -> float:
+        seg_end = metrics[i].source_end
+        for r in silence_regions:
+            if r.get("label") == "silence" and r["start_s"] >= seg_end - 0.1:
+                return r["end_s"] - r["start_s"]
+        if i + 1 < n:
+            return max(0.0, metrics[i + 1].source_start - metrics[i].source_end)
+        return 0.0
+
+    gaps = [_gap_after(i) for i in range(n)]
+
+    # ── Discretise cumulative drift ───────────────────────────────────────────
+    _STEP = 0.05
+    _MAX = min(sum(m.overflow_s for m in metrics if m.overflow_s > 0) + 1.0, 30.0)
+    N_D = max(2, int(_MAX / _STEP) + 2)
+    _INF = float("inf")
+
+    # dp[i][d] = minimum total cost for segments 0..i-1 with drift = d * _STEP
+    dp = [[_INF] * N_D for _ in range(n + 1)]
+    parent: list[list] = [[None] * N_D for _ in range(n + 1)]
+    dp[0][0] = 0.0
+
+    # ── Per-segment cost helpers ──────────────────────────────────────────────
+    def _no_shift_cost(m: SegmentMetrics) -> tuple:
+        sf = m.predicted_stretch
+        if sf <= 1.1:
+            return 0.0, AlignAction.ACCEPT, 1.0
+        if sf <= max_stretch:
+            return (sf - 1.0) ** 2, AlignAction.MILD_STRETCH, min(sf, max_stretch)
+        if sf <= 2.5:
+            return (sf - 1.0) ** 2 * 10.0, AlignAction.REQUEST_SHORTER, 1.0
+        return (sf - 1.0) ** 2 * 100.0, AlignAction.FAIL, 1.0
+
+    def _gap_shift_cost(m: SegmentMetrics, gap: float):
+        """Return (cost, action, stretch, gap_used) or None if ineligible."""
+        if m.overflow_s <= 0 or gap < m.overflow_s:
+            return None
+        # Borrowing exactly overflow_s makes scheduled_dur == predicted_tts_s → sf = 1.0
+        return drift_penalty * m.overflow_s, AlignAction.GAP_SHIFT, 1.0, m.overflow_s
+
+    # ── Forward DP pass ───────────────────────────────────────────────────────
+    for i, m in enumerate(metrics):
+        ns_cost, ns_act, ns_stretch = _no_shift_cost(m)
+        gs = _gap_shift_cost(m, gaps[i])
+
+        for d in range(N_D):
+            base = dp[i][d]
+            if base >= _INF:
+                continue
+
+            # Option A: no gap-shift
+            nc = base + ns_cost
+            if nc < dp[i + 1][d]:
+                dp[i + 1][d] = nc
+                parent[i + 1][d] = (d, ns_act, 0.0, ns_stretch)
+
+            # Option B: gap-shift
+            if gs is not None:
+                g_cost, g_act, g_stretch, used = gs
+                nd = d + round(used / _STEP)
+                if nd < N_D:
+                    gc = base + g_cost
+                    if gc < dp[i + 1][nd]:
+                        dp[i + 1][nd] = gc
+                        parent[i + 1][nd] = (d, g_act, used, g_stretch)
+
+    # ── Find optimal terminal state ───────────────────────────────────────────
+    best_d = min(range(N_D), key=lambda d: dp[n][d])
+
+    # ── Backtrack through parent pointers ────────────────────────────────────
+    choices: list[tuple] = []
+    d = best_d
+    for i in range(n, 0, -1):
+        prev_d, action, gap_s, stretch = parent[i][d]
+        choices.append((action, gap_s, stretch))
+        d = prev_d
+    choices.reverse()
+
+    # ── Assemble AlignedSegment list ──────────────────────────────────────────
+    result: list[AlignedSegment] = []
+    drift = 0.0
+    for m, (action, gap_shift_s, stretch_factor) in zip(metrics, choices):
+        sched_start = m.source_start + drift
+        sched_end   = sched_start + m.source_duration_s + gap_shift_s
+        result.append(AlignedSegment(
+            index           = m.index,
+            original_start  = m.source_start,
+            original_end    = m.source_end,
+            scheduled_start = sched_start,
+            scheduled_end   = sched_end,
+            text            = m.translated_text,
+            action          = action,
+            gap_shift_s     = gap_shift_s,
+            stretch_factor  = stretch_factor,
+        ))
+        drift += gap_shift_s
+
+    return result
