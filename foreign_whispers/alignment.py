@@ -33,12 +33,50 @@ def _count_syllables(text: str) -> int:
     return max(1, len(clusters))
 
 
-_SYLLABLE_RATE = 4.5  # syllables per second for Romance languages
+# ── TTS duration regression model ───────────────────────────────────────────
+# Linear model fitted on 156 segments of Chatterbox neural TTS output on
+# Spanish text (single-speaker, natural speaking rate).
+#
+# Features and their fitted coefficients:
+#   syllables  — primary duration driver (~6.9 syl/s when word overhead removed)
+#   words      — inter-word micro-pauses (~110 ms/word boundary)
+#   commas     — comma/semicolon breath pause (~154 ms each)
+#   terminals  — sentence-final pause for . ! ? (~91 ms each)
+#   intercept  — fixed per-utterance overhead (~532 ms)
+#
+# MAE on the training corpus: 0.302 s  (vs 0.449 s for raw 4.5 syl/s heuristic)
+# Re-fit by running Task 1 in notebooks/alignment_integration/.
+_DURATION_COEFFS = (
+    0.145,   # c_syl       seconds per syllable  (~6.9 syl/s net of word pauses)
+    0.110,   # c_word      inter-word micro-pause (~110 ms/word)
+    0.154,   # c_comma     comma / semicolon pause (~154 ms)
+    0.091,   # c_terminal  sentence-final pause   (~91 ms)
+    0.532,   # c_intercept fixed utterance overhead
+)
 
 
 def _estimate_duration(text: str) -> float:
-    """Estimate TTS duration in seconds using a syllable-rate heuristic."""
-    return _count_syllables(text) / _SYLLABLE_RATE
+    """Estimate TTS duration in seconds using a multi-feature linear model.
+
+    Improves on the raw syllable-rate heuristic (~4.5 syl/s) by accounting
+    for inter-word pauses, punctuation pauses, and a fixed per-utterance
+    overhead — features the syllable count alone cannot capture.
+
+    The coefficients were fitted via OLS on 156 Chatterbox/Spanish segments
+    and reduce mean absolute error from 0.45 s to 0.30 s.
+    """
+    c_syl, c_word, c_comma, c_term, c_intercept = _DURATION_COEFFS
+    syllables = _count_syllables(text)
+    words = max(1, len(text.split()))
+    commas = len(re.findall(r"[,;]", text))
+    terminals = len(re.findall(r"[.!?¿¡]", text))
+    return (
+        c_syl * syllables
+        + c_word * words
+        + c_comma * commas
+        + c_term * terminals
+        + c_intercept
+    )
 
 
 @dataclasses.dataclass
