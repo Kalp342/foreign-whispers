@@ -1,6 +1,5 @@
-"""POST /api/diarize/{video_id} — speaker diarization (issue fw-lua)."""
+"""POST /api/diarize/{video_id} - speaker diarization."""
 
-import asyncio
 import json
 import subprocess
 
@@ -18,13 +17,7 @@ _alignment_service = AlignmentService(settings=settings)
 
 @router.post("/diarize/{video_id}", response_model=DiarizeResponse)
 async def diarize_endpoint(video_id: str):
-    """Run speaker diarization on a video's audio track.
-
-    Steps:
-    1. Extract audio from video via ffmpeg
-    2. Run pyannote diarization
-    3. Cache and return speaker segments
-    """
+    """Run speaker diarization on a video's audio track."""
     title = resolve_title(video_id)
     if title is None:
         raise HTTPException(status_code=404, detail=f"Video {video_id} not found")
@@ -43,25 +36,31 @@ async def diarize_endpoint(video_id: str):
             skipped=True,
         )
 
-    # ---- YOUR CODE HERE ----
-    # Step 1: Extract audio from video
-    #   video_path = settings.videos_dir / f"{title}.mp4"
-    #   audio_path = diar_dir / f"{title}.wav"
-    #   Use subprocess.run to call:
-    #     ffmpeg -i <video_path> -vn -acodec pcm_s16le -ar 16000 -y <audio_path>
-    #
-    # Step 2: Run diarization
-    #   diar_segments = _alignment_service.diarize(str(audio_path))
-    #
-    # Step 3: Extract unique speakers
-    #   speakers = sorted(set(s["speaker"] for s in diar_segments))
-    #
-    # Step 4: Cache result
-    #   result = {"speakers": speakers, "segments": diar_segments}
-    #   diar_path.write_text(json.dumps(result))
-    #
-    # Step 5: Return DiarizeResponse
-    #   return DiarizeResponse(video_id=video_id, speakers=speakers, segments=diar_segments)
-    #
-    raise HTTPException(status_code=501, detail="Diarization not yet implemented")
-    # ---- END YOUR CODE ----
+    # Step 1: Extract 16 kHz mono WAV from the video
+    video_path = settings.videos_dir / f"{title}.mp4"
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail=f"Video file not found for {video_id}")
+
+    audio_path = diar_dir / f"{title}.wav"
+    proc = subprocess.run(
+        [
+            "ffmpeg", "-i", str(video_path),
+            "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+            "-y", str(audio_path),
+        ],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise HTTPException(status_code=500, detail="Audio extraction failed")
+
+    # Step 2: Run pyannote diarization
+    diar_segments = _alignment_service.diarize(str(audio_path))
+
+    # Step 3: Unique speakers in order of first appearance
+    speakers = sorted(set(s["speaker"] for s in diar_segments))
+
+    # Step 4: Cache to disk
+    diar_path.write_text(json.dumps({"speakers": speakers, "segments": diar_segments}))
+
+    # Step 5: Return response
+    return DiarizeResponse(video_id=video_id, speakers=speakers, segments=diar_segments)
