@@ -9,6 +9,7 @@ from api.src.core.config import settings
 from api.src.core.dependencies import resolve_title
 from api.src.schemas.diarize import DiarizeResponse
 from api.src.services.alignment_service import AlignmentService
+from foreign_whispers.diarization import assign_speakers
 
 router = APIRouter(prefix="/api")
 
@@ -62,5 +63,13 @@ async def diarize_endpoint(video_id: str):
     # Step 4: Cache to disk
     diar_path.write_text(json.dumps({"speakers": speakers, "segments": diar_segments}))
 
-    # Step 5: Return response
+    # Step 5: Merge speaker labels into the existing transcription if present
+    transcript_path = settings.transcriptions_dir / f"{title}.json"
+    if transcript_path.exists():
+        transcript = json.loads(transcript_path.read_text())
+        labeled_segments = assign_speakers(transcript.get("segments", []), diar_segments)
+        transcript["segments"] = labeled_segments
+        transcript_path.write_text(json.dumps(transcript))
+
+    # Step 6: Return response
     return DiarizeResponse(video_id=video_id, speakers=speakers, segments=diar_segments)
