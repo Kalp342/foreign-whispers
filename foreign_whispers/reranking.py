@@ -83,6 +83,63 @@ _FILLER_SUFFIX = re.compile(
 _MULTI_SPACE = re.compile(r"  +")
 
 # ---------------------------------------------------------------------------
+# Candidate scoring
+# ---------------------------------------------------------------------------
+
+def _bigram_similarity(a: str, b: str) -> float:
+    """Jaccard similarity of character bigrams — lightweight semantic proxy.
+
+    Returns a value in [0, 1] where 1 means identical and 0 means no shared
+    bigrams.  Requires no external dependencies.
+    """
+    def bigrams(s: str) -> set:
+        return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) > 1 else set()
+
+    ba, bb = bigrams(a.lower()), bigrams(b.lower())
+    if not ba and not bb:
+        return 1.0
+    if not ba or not bb:
+        return 0.0
+    return len(ba & bb) / len(ba | bb)
+
+
+def _candidate_score(
+    text: str,
+    target_duration_s: float,
+    baseline_es: str,
+    lambda_sem: float = 0.1,
+) -> float:
+    """Score a candidate translation — lower is better.
+
+    Score = (predicted_duration − target_duration)² + λ × semantic_distance
+
+    Duration is estimated with the alignment module's multi-feature OLS model
+    when available, falling back to the crude chars-per-second heuristic.
+    The semantic term uses character-bigram Jaccard distance so that candidates
+    which drift far from the original meaning are lightly penalised.
+
+    Args:
+        text: Candidate translation text.
+        target_duration_s: Desired TTS duration in seconds.
+        baseline_es: Original baseline translation (used for semantic distance).
+        lambda_sem: Weight for the semantic distance term (default 0.1).
+
+    Returns:
+        Non-negative float; lower means closer to the target duration while
+        remaining semantically similar to the baseline.
+    """
+    try:
+        from foreign_whispers.alignment import _estimate_duration
+        predicted = _estimate_duration(text)
+    except Exception:
+        predicted = len(text) / _CHARS_PER_SECOND
+
+    duration_err = (predicted - target_duration_s) ** 2
+    sem_dist = 1.0 - _bigram_similarity(text, baseline_es)
+    return duration_err + lambda_sem * sem_dist
+
+
+# ---------------------------------------------------------------------------
 # MarianMT lazy-loaded model cache (module-level, loaded on first use)
 # ---------------------------------------------------------------------------
 _marian_model: Optional[object] = None
@@ -189,10 +246,13 @@ class TranslationCandidate:
         text: The translated text.
         char_count: Number of characters in *text*.
         brevity_rationale: Short explanation of what was shortened.
+        duration_score: Combined score used for ranking — lower is better.
+            Computed as ``(predicted_duration − target_duration)² + λ × semantic_distance``.
     """
     text: str
     char_count: int
     brevity_rationale: str = ""
+    duration_score: float = 0.0
 
 
 @dataclasses.dataclass
@@ -351,6 +411,7 @@ def get_shorter_translations(
             text=text,
             char_count=len(text),
             brevity_rationale=rationale,
+            duration_score=_candidate_score(text, target_duration_s, baseline_es),
         ))
 
     # ------------------------------------------------------------------
@@ -388,4 +449,4 @@ def get_shorter_translations(
         if hard_cut:
             _add(hard_cut, hard_rationale)
 
-    return sorted(candidates, key=lambda c: c.char_count)
+    return sorted(candidates, key=lambda c: c.duration_score)
