@@ -416,7 +416,7 @@ def _compute_speech_offset(source_path: str) -> float:
     return yt_start - whisper_start
 
 
-def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=None, lang: str = "es"):
+def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=None, lang: str = "es", speaker_wav: str | None = None):
     """Read translated JSON with segment timestamps and produce a time-aligned WAV.
 
     Each segment is individually synthesized and time-stretched to match its
@@ -505,8 +505,8 @@ def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=
     with tempfile.TemporaryDirectory() as synth_dir:
         def _do_synth(idx: int, text: str, speaker: str = "") -> tuple[int, bytes | None]:
             wav_path = str(pathlib.Path(synth_dir) / f"seg_{idx}.wav")
-            speaker_wav = speaker_voice_map.get(speaker, "")
-            return idx, _synthesize_raw(engine, text, wav_path, speaker_wav=speaker_wav)
+            seg_speaker_wav = speaker_voice_map.get(speaker, "") or (speaker_wav or "")
+            return idx, _synthesize_raw(engine, text, wav_path, speaker_wav=seg_speaker_wav)
 
         with ThreadPoolExecutor(max_workers=_TTS_WORKERS) as pool:
             futures = {
