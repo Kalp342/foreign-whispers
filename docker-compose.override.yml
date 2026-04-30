@@ -1,0 +1,20 @@
+services:
+  api:
+    network_mode: bridge
+    ports:
+      - "8080:8080"
+    command: ['uv', 'run', '--group', 'alignment', 'uvicorn', 'api.src.main:app', '--host', '0.0.0.0', '--port', '8080']
+    environment:
+      - FW_HF_TOKEN=${HF_TOKEN:-}
+      - CHATTERBOX_API_URL=http://host.docker.internal:8020
+
+  frontend:
+    network_mode: bridge
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://host.docker.internal:8080
+
+  chatterbox-gpu:
+    environment:
+      DEVICE: cpu

@@ -104,6 +104,13 @@ class FWClient:
             params={"target_language": target_language},
         )
 
+    def diarize(self, video_id: str) -> dict:
+        """Run speaker diarization on a downloaded video.
+
+        Returns ``{video_id, speakers, segments}``.
+        """
+        return self._post(f"/api/diarize/{video_id}")
+
     def tts(
         self,
         video_id: str,

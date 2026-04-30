@@ -1,5 +1,7 @@
 """POST /api/diarize/{video_id} - speaker diarization."""
 
+import asyncio
+import functools
 import json
 import subprocess
 
@@ -10,6 +12,27 @@ from api.src.core.dependencies import resolve_title
 from api.src.schemas.diarize import DiarizeResponse
 from api.src.services.alignment_service import AlignmentService
 from foreign_whispers.diarization import assign_speakers
+
+
+def _merge_speakers_into_translation(title: str, diar_segments: list[dict]) -> None:
+    """Propagate speaker labels from diarization into the translation JSON.
+
+    Translation segments carry the same timestamps as the source transcription
+    segments they came from. We assign each translation segment the speaker
+    whose diarization window contains its midpoint.
+    """
+    translation_path = settings.translations_dir / f"{title}.json"
+    if not translation_path.exists():
+        return
+    translation = json.loads(translation_path.read_text())
+    segments = translation.get("segments", [])
+    for seg in segments:
+        mid = (seg["start"] + seg["end"]) / 2
+        for d in diar_segments:
+            if d["start_s"] <= mid <= d["end_s"]:
+                seg["speaker"] = d["speaker"]
+                break
+    translation_path.write_text(json.dumps(translation))
 
 router = APIRouter(prefix="/api")
 
@@ -27,9 +50,11 @@ async def diarize_endpoint(video_id: str):
     diar_dir.mkdir(parents=True, exist_ok=True)
     diar_path = diar_dir / f"{title}.json"
 
-    # Return cached result
+    # Return cached result — still apply speaker labels to translation in case
+    # the translation was created after diarization ran.
     if diar_path.exists():
         data = json.loads(diar_path.read_text())
+        _merge_speakers_into_translation(title, data.get("segments", []))
         return DiarizeResponse(
             video_id=video_id,
             speakers=data.get("speakers", []),
@@ -54,8 +79,11 @@ async def diarize_endpoint(video_id: str):
     if proc.returncode != 0:
         raise HTTPException(status_code=500, detail="Audio extraction failed")
 
-    # Step 2: Run pyannote diarization
-    diar_segments = _alignment_service.diarize(str(audio_path))
+    # Step 2: Run pyannote diarization (blocking — offload to thread pool)
+    loop = asyncio.get_event_loop()
+    diar_segments = await loop.run_in_executor(
+        None, functools.partial(_alignment_service.diarize, str(audio_path))
+    )
 
     # Step 3: Unique speakers in order of first appearance
     speakers = sorted(set(s["speaker"] for s in diar_segments))
@@ -71,5 +99,8 @@ async def diarize_endpoint(video_id: str):
         transcript["segments"] = labeled_segments
         transcript_path.write_text(json.dumps(transcript))
 
-    # Step 6: Return response
+    # Step 6: Propagate speaker labels into the translation JSON
+    _merge_speakers_into_translation(title, diar_segments)
+
+    # Step 7: Return response
     return DiarizeResponse(video_id=video_id, speakers=speakers, segments=diar_segments)
