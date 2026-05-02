@@ -257,3 +257,131 @@ def dubbing_scorecard(
         "naturalness":       natural_dim,
         "overall":           round(overall, 3),
     }
+
+
+def scorecard_from_align_json(
+    align_data: dict,
+    source_segments: list[dict] | None = None,
+) -> dict:
+    """Compute a dubbing scorecard directly from the ``align.json`` dict on disk.
+
+    The align JSON (saved by the TTS engine) does not serialise ``SegmentMetrics``
+    or ``AlignedSegment`` objects, so ``dubbing_scorecard`` cannot be called
+    directly.  This function reconstructs equivalent scores from the JSON fields.
+
+    Parameters
+    ----------
+    align_data:
+        Dict loaded from ``<title>.align.json``.
+    source_segments:
+        Optional list of Whisper transcription segments
+        ``[{"start", "end", "text", ...}]``.  When provided, enables the
+        EN→ES length-ratio semantic-fidelity score.  Without it the semantic
+        score is omitted (neutral 0.5 proxy).
+
+    Returns
+    -------
+    Same shape as ``dubbing_scorecard``.
+    """
+    segs = align_data.get("segments", [])
+    n = len(segs)
+    if n == 0:
+        return {
+            "timing":           {"score": 0.0},
+            "intelligibility":  {"score": 0.0, "method": "proxy"},
+            "semantic_fidelity":{"score": 0.0, "method": "length_ratio"},
+            "naturalness":      {"score": 0.0, "rate_cv": 0.0, "mean_syllables_per_s": 0.0},
+            "overall":          0.0,
+            "note":             "empty align data",
+        }
+
+    # ── 1. Timing ─────────────────────────────────────────────────────────────
+    mae        = align_data.get("mean_abs_duration_error_s", 0.0)
+    pct_severe = align_data.get("pct_severe_stretch", 0.0)
+    drift      = align_data.get("total_cumulative_drift_s", 0.0)
+
+    dur_score    = max(0.0, 1.0 - mae / 2.0)
+    severe_score = 1.0 - pct_severe / 100.0
+    drift_score  = max(0.0, 1.0 - abs(drift) / 60.0)
+    timing_score = _stats.mean([dur_score, severe_score, drift_score])
+    timing_dim = {
+        "mean_abs_duration_error_s": round(mae, 3),
+        "duration_error_score":      round(dur_score, 3),
+        "pct_severe_stretch":        pct_severe,
+        "severe_stretch_score":      round(severe_score, 3),
+        "total_cumulative_drift_s":  round(drift, 3),
+        "drift_score":               round(drift_score, 3),
+        "score":                     round(timing_score, 3),
+    }
+
+    # ── 2. Intelligibility (proxy from stretch_factor / action) ───────────────
+    per_intel = []
+    n_fail = n_clip = 0
+    for seg in segs:
+        action = (seg.get("action") or "").lower()
+        sf     = seg.get("stretch_factor", 1.0)
+        if action == "fail":
+            per_intel.append(0.0)
+            n_fail += 1
+        elif action in ("request_shorter", "clip"):
+            # audio overflows slot — estimate heard fraction
+            raw = seg.get("raw_duration_s", 1.0)
+            tgt = max(0.1, seg.get("target_sec", raw))
+            per_intel.append(min(1.0, tgt / raw))
+            n_clip += 1
+        else:
+            per_intel.append(max(0.0, 1.0 - 0.3 * (sf - 1.0)))
+    intel_score = _stats.mean(per_intel)
+    intel_dim = {
+        "method":    "proxy",
+        "n_fail":    n_fail,
+        "n_clipped": n_clip,
+        "score":     round(intel_score, 3),
+    }
+
+    # ── 3. Semantic fidelity ──────────────────────────────────────────────────
+    if source_segments and len(source_segments) == n:
+        ratios = [
+            len(t.get("text", "")) / max(1, len(s.get("text", "")))
+            for t, s in zip(segs, source_segments)
+        ]
+        scores   = [max(0.0, 1.0 - abs(r - 1.2) / 1.2) for r in ratios]
+        sem_score = _stats.mean(scores)
+        sem_dim = {
+            "method":            "length_ratio",
+            "mean_length_ratio": round(_stats.mean(ratios), 3),
+            "score":             round(sem_score, 3),
+        }
+    else:
+        # No source text available — neutral proxy
+        sem_score = 0.5
+        sem_dim = {"method": "neutral_proxy", "score": sem_score}
+
+    # ── 4. Naturalness (syllables per target slot second) ─────────────────────
+    rates = [
+        _count_syllables(seg.get("text", "")) / max(0.1, seg.get("target_sec", 1.0))
+        for seg in segs
+    ]
+    mean_rate = _stats.mean(rates)
+    cv = (_stats.stdev(rates) / mean_rate) if len(rates) >= 2 and mean_rate > 0 else 0.0
+    nat_score = max(0.0, 1.0 - max(0.0, cv - 0.3) / 1.2)
+    natural_dim = {
+        "mean_syllables_per_s": round(mean_rate, 2),
+        "rate_cv":              round(cv, 3),
+        "score":                round(nat_score, 3),
+    }
+
+    # ── Weighted composite ────────────────────────────────────────────────────
+    overall = (
+        0.40 * timing_score
+        + 0.30 * intel_score
+        + 0.20 * sem_score
+        + 0.10 * nat_score
+    )
+    return {
+        "timing":            timing_dim,
+        "intelligibility":   intel_dim,
+        "semantic_fidelity": sem_dim,
+        "naturalness":       natural_dim,
+        "overall":           round(overall, 3),
+    }
