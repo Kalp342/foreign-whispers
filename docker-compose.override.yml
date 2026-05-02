@@ -12,9 +12,12 @@ services:
     network_mode: bridge
     ports:
       - "8501:8501"
+    build:
+      args:
+        API_URL: http://host.docker.internal:8080
     environment:
       - API_URL=http://host.docker.internal:8080
 
   chatterbox-gpu:
     environment:
-      DEVICE: cpu
+      DEVICE: cuda
