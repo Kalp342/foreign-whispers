@@ -14,7 +14,9 @@ WORKDIR /app
 COPY spaces/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --upgrade -r /tmp/requirements.txt
 
-# Pre-download argostranslate EN→ES language pack so first-run is fast
+# Pre-download argostranslate EN→ES language pack so first-run is fast.
+# Runs as root with HOME=/home/user so packages land in the user's data dir,
+# then chown so the non-root runtime user can read and update the index.
 RUN python - <<'EOF'
 import argostranslate.package, argostranslate.translate
 argostranslate.package.update_package_index()
@@ -25,6 +27,7 @@ if pkg:
     argostranslate.package.install_from_path(path)
     print("argostranslate EN→ES installed")
 EOF
+RUN chown -R user:user /home/user/.local
 
 # Copy project source
 COPY --chown=user:user . /app
