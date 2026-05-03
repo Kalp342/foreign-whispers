@@ -1,7 +1,7 @@
 # HuggingFace Spaces — Foreign Whispers dubbing pipeline
 # torch / torchaudio are provided by the pytorch/pytorch base image
 
-gradio>=4.36,<5
+gradio>=5.0
 faster-whisper>=1.0
 chatterbox-tts
 argostranslate

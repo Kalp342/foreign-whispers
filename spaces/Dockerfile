@@ -12,7 +12,7 @@ WORKDIR /app
 
 # Install Python deps as root (writes to system site-packages for all users)
 COPY spaces/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN pip install --no-cache-dir --upgrade -r /tmp/requirements.txt
 
 # Pre-download argostranslate EN→ES language pack so first-run is fast
 RUN python - <<'EOF'
