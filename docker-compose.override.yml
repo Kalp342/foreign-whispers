@@ -7,6 +7,7 @@ services:
     environment:
       - FW_HF_TOKEN=${HF_TOKEN:-}
       - CHATTERBOX_API_URL=http://host.docker.internal:8020
+      - FW_TTS_WORKERS=1
 
   frontend:
     network_mode: bridge
