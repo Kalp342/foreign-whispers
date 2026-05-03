@@ -79,7 +79,7 @@ class ChatterboxClient:
         resp = requests.post(
             f"{self.base_url}/v1/audio/speech",
             json={"input": text, "response_format": "wav"},
-            timeout=(5, 60),
+            timeout=(5, 180),
         )
         resp.raise_for_status()
         return resp.content
@@ -103,7 +103,7 @@ class ChatterboxClient:
                 f"{self.base_url}/v1/audio/speech/upload",
                 data={"input": text, "response_format": "wav"},
                 files={"voice_file": (wav_path.name, f, "audio/wav")},
-                timeout=(5, 60),
+                timeout=(5, 180),
             )
         resp.raise_for_status()
         return resp.content
