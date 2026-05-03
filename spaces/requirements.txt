@@ -1,0 +1,17 @@
+# HuggingFace Spaces — Foreign Whispers dubbing pipeline
+# torch / torchaudio are provided by the pytorch/pytorch base image
+
+gradio>=4.36,<5
+faster-whisper>=1.0
+chatterbox-tts
+argostranslate
+yt-dlp
+youtube-transcript-api
+pyrubberband
+librosa
+soundfile
+pydub
+requests
+transformers>=4.30,<4.46
+sentencepiece
+numpy<2
