@@ -393,31 +393,14 @@ def _write_align_report(
 
 
 def _compute_speech_offset(source_path: str) -> float:
-    """Compute timing offset between YouTube captions and Whisper segments.
+    """Returns 0 — Whisper timestamps are already relative to the video start.
 
-    Returns seconds to add to Whisper timestamps so TTS audio aligns with
-    the actual speech start in the original video.
+    The prior implementation (yt_start - whisper_start) caused large negative
+    offsets whenever YouTube captions included non-speech markers ([Music] etc.)
+    at t=0 while Whisper correctly placed the first segment later, shifting
+    all dubbed audio well ahead of the actual speech in the video.
     """
-    title = pathlib.Path(source_path).stem
-    # source_path: .../translations/{model}/{title}.json → data_dir is 3 levels up
-    base_dir = pathlib.Path(source_path).parent.parent.parent
-
-    yt_path = base_dir / "youtube_captions" / f"{title}.txt"
-    whisper_path = base_dir / "transcriptions" / "whisper" / f"{title}.json"
-
-    if not yt_path.exists() or not whisper_path.exists():
-        return 0.0
-
-    first_line = yt_path.read_text().split("\n", 1)[0].strip()
-    if not first_line:
-        return 0.0
-    yt_start = json.loads(first_line).get("start", 0.0)
-
-    whisper_data = json.loads(whisper_path.read_text())
-    segs = whisper_data.get("segments", [])
-    whisper_start = segs[0]["start"] if segs else 0.0
-
-    return yt_start - whisper_start
+    return 0.0
 
 
 def text_file_to_speech(source_path, output_path, tts_engine=None, *, alignment=None, lang: str = "es", speaker_wav: str | None = None, voice_map: dict | None = None):
