@@ -17,15 +17,6 @@ def _yt_dlp_opts(**extra):
     opts = {"quiet": True, "no_warnings": True}
     if pathlib.Path(_COOKIES_FILE).exists():
         opts["cookiefile"] = _COOKIES_FILE
-    # If ffmpeg is not on PATH, fall back to imageio-ffmpeg's bundled binary.
-    # Pass the full exe path — yt-dlp accepts either a directory or a file path,
-    # and imageio-ffmpeg names its binary with a version suffix so dir-lookup fails.
-    if not shutil.which("ffmpeg"):
-        try:
-            import imageio_ffmpeg as _iio
-            opts["ffmpeg_location"] = _iio.get_ffmpeg_exe()
-        except Exception:
-            pass
     opts.update(extra)
     return opts
 
