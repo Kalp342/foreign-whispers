@@ -12,6 +12,6 @@ librosa
 soundfile
 pydub
 requests
-transformers>=4.30,<4.46
 sentencepiece
 numpy<2
+imageio-ffmpeg

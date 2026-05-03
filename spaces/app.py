@@ -153,23 +153,23 @@ def _segments_to_vtt(segments: list[dict]) -> str:
 # Full dubbing pipeline
 # ---------------------------------------------------------------------------
 
-def dub_video(youtube_url: str, progress=gr.Progress()) -> tuple[str | None, str]:
+def dub_video(youtube_url: str) -> tuple[str | None, str]:
     """End-to-end pipeline. Returns (dubbed_video_path, log_text)."""
     if not youtube_url.strip():
         return None, "Please enter a YouTube URL."
 
     logs: list[str] = []
 
-    def log(msg: str) -> str:
+    def log(msg: str) -> None:
         logs.append(msg)
-        return "\n".join(logs)
+        print(msg)
 
     try:
         with tempfile.TemporaryDirectory() as _tmp:
             work = pathlib.Path(_tmp)
 
             # ── 1. Download ──────────────────────────────────────────────
-            progress(0.05, desc="Downloading video…")
+            log("⏳ Downloading video…")
             from api.src.services.download_engine import (
                 download_caption,
                 download_video,
@@ -182,7 +182,6 @@ def dub_video(youtube_url: str, progress=gr.Progress()) -> tuple[str | None, str
 
             vid_path = pathlib.Path(download_video(youtube_url, str(work), title))
             log(f"✓ Downloaded ({vid_path.stat().st_size // 1_000_000} MB)")
-            progress(0.15)
 
             # ── 2. Transcribe ────────────────────────────────────────────
             transcript: dict | None = None
@@ -199,14 +198,12 @@ def dub_video(youtube_url: str, progress=gr.Progress()) -> tuple[str | None, str
                 pass
 
             if not transcript:
-                progress(0.25, desc="Transcribing with Whisper…")
+                log("⏳ Transcribing with Whisper…")
                 transcript = _transcribe_video(vid_path)
                 log(f"✓ Whisper STT ({len(transcript['segments'])} segs)")
 
-            progress(0.35)
-
             # ── 3. Translate ─────────────────────────────────────────────
-            progress(0.40, desc="Translating to Spanish…")
+            log("⏳ Translating to Spanish…")
             from api.src.services.translation_engine import (
                 download_and_install_package,
                 translate_sentence,
@@ -220,7 +217,6 @@ def dub_video(youtube_url: str, progress=gr.Progress()) -> tuple[str | None, str
             es_transcript["text"] = translate_sentence(es_transcript.get("text", ""), "en", "es")
             es_transcript["language"] = "es"
             log(f"✓ Translated {len(es_transcript['segments'])} segments EN→ES")
-            progress(0.55)
 
             # Lay out the directory structure tts_engine._load_en_transcript expects:
             #   data/translations/argos/{title}.json   ← ES translation
@@ -242,7 +238,7 @@ def dub_video(youtube_url: str, progress=gr.Progress()) -> tuple[str | None, str
                 shutil.copy(cap_path, yt_cap_dir / f"{title}.txt")
 
             # ── 4. TTS + temporal alignment ──────────────────────────────
-            progress(0.60, desc="Synthesizing dubbed audio…")
+            log("⏳ Synthesizing dubbed audio…")
             from api.src.services.tts_engine import text_file_to_speech
 
             tts_dir = work / "tts"
@@ -259,10 +255,9 @@ def dub_video(youtube_url: str, progress=gr.Progress()) -> tuple[str | None, str
             if not audio_path.exists():
                 raise FileNotFoundError("TTS output not found — check logs above")
             log(f"✓ Dubbed audio ({audio_path.stat().st_size // 1_000} KB)")
-            progress(0.88)
 
             # ── 5. Stitch ────────────────────────────────────────────────
-            progress(0.92, desc="Stitching video…")
+            log("⏳ Stitching video…")
             dubbed_tmp = work / f"{title}_dubbed.mp4"
             from api.src.services.stitch_engine import stitch_audio
 
@@ -280,7 +275,7 @@ def dub_video(youtube_url: str, progress=gr.Progress()) -> tuple[str | None, str
             shutil.copy(dubbed_tmp, final_vid)
             final_vtt.write_text(vtt_content)
 
-            progress(1.0, desc="Done!")
+            log("✓ Done!")
             return str(final_vid), "\n".join(logs)
 
     except Exception as exc:
