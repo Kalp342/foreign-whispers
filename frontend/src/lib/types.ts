@@ -93,7 +93,7 @@ export interface VideoVariant {
 }
 
 export const DEFAULT_STUDIO_SETTINGS: StudioSettings = {
-  dubbing: ["baseline"],
+  dubbing: ["aligned"],
   diarization: [],
   voiceCloning: [],
   useYoutubeCaptions: true,

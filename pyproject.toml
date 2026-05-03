@@ -38,6 +38,8 @@ alignment = [
     "logfire",
     "silero-vad",
     "pyannote.audio",
+    "transformers>=4.30,<4.46",
+    "sentencepiece",
 ]
 
 [tool.uv]

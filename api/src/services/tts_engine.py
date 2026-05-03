@@ -321,17 +321,21 @@ def _load_en_transcript(es_source_path: str) -> dict:
 
 
 def _build_alignment(en_transcript: dict, es_transcript: dict) -> tuple:
-    """Run global_align and return (metrics_list, {segment_index: AlignedSegment}).
+    """Run DP global alignment and return (metrics_list, {segment_index: AlignedSegment}).
 
+    Uses global_align_dp which derives inter-segment silence budgets directly
+    from transcript timestamps, enabling GAP_SHIFT without requiring a VAD pass.
     Returns ([], {}) if the alignment library is unavailable or fails.
     """
     try:
-        from foreign_whispers.alignment import compute_segment_metrics, global_align
+        from foreign_whispers.alignment import compute_segment_metrics, global_align_dp
     except ImportError:
         return [], {}
     try:
         metrics = compute_segment_metrics(en_transcript, es_transcript)
-        aligned = global_align(metrics, silence_regions=[])
+        if not metrics:
+            return [], {}
+        aligned = global_align_dp(metrics, silence_regions=[])
         return metrics, {seg.index: seg for seg in aligned}
     except Exception as exc:
         print(f"[tts] alignment failed ({exc}), proceeding without alignment")
