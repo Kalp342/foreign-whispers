@@ -1,5 +1,8 @@
 # HuggingFace Spaces — Foreign Whispers dubbing pipeline
-# torch / torchaudio are provided by the pytorch/pytorch base image
+# Pinned CUDA 12.1 wheel set — all three must match to avoid torchvision::nms crash
+torch==2.3.1+cu121
+torchvision==0.18.1+cu121
+torchaudio==2.3.1+cu121
 
 gradio>=5.0
 faster-whisper>=1.0

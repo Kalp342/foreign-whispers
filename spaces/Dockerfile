@@ -10,15 +10,11 @@ RUN useradd -m -u 1000 user
 ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
 WORKDIR /app
 
-# Install matched torch + torchvision + torchaudio from official CUDA 12.1 wheels
-# (must run before requirements.txt so pip doesn't pull CPU-only builds)
-RUN pip install --no-cache-dir \
-    torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu121
-
-# Install remaining deps (torch already present, won't be replaced)
+# Install all deps in one pass — torch/torchvision/torchaudio are pinned to
+# CUDA 12.1 wheels in requirements.txt; --extra-index-url makes pip find them.
 COPY spaces/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu121
 
 # Pre-download argostranslate EN→ES language pack so first-run is fast
 RUN python - <<'EOF'
